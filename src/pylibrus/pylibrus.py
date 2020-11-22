@@ -46,22 +46,22 @@ def retrieve_from(txt, start, end):
 class Msg(Base):
     __tablename__ = "messages"
 
-    url = Column(String, primary_key=True)
+    url = Column(String(1024), primary_key=True)
     folder = Column(Integer)
-    sender = Column(String)
-    subject = Column(String)
+    sender = Column(String(1024))
+    subject = Column(String(4096))
     date = Column(DateTime)
-    contents_html = Column(String)
-    contents_text = Column(String)
+    contents_html = Column(String(409600))
+    contents_text = Column(String(409600))
     email_sent = Column(Boolean, default=False)
 
 
 class Attachment(Base):
     __tablename__ = "attachments"
 
-    link_id = Column(String, primary_key=True)  # link_id seems to contain message id and attachment id
-    msg_path = Column(String, ForeignKey(Msg.url))
-    name = Column(String)
+    link_id = Column(String(256), primary_key=True)  # link_id seems to contain message id and attachment id
+    msg_path = Column(String(1024), ForeignKey(Msg.url))
+    name = Column(String(1024))
     data = Column(LargeBinary)
 
 
@@ -309,17 +309,17 @@ def format_sender(sender_info, sender_email):
 
 
 class LibrusNotifier(object):
-    def __init__(self, user, pwd, server, db_name, port=587):
+    def __init__(self, user, pwd, server, db_url, port=587):
         self._user = user
         self._pwd = pwd
         self._server = server
         self._port = port
         self._engine = None
         self._session = None
-        self._db_name = db_name
+        self._db_url = db_url
 
     def _create_db(self):
-        self._engine = create_engine("sqlite:///" + self._db_name)
+        self._engine = create_engine(self._db_url)
         Base.metadata.create_all(self._engine)
         session_maker = sessionmaker(bind=self._engine)
         self._session = session_maker()
@@ -351,8 +351,11 @@ class LibrusNotifier(object):
                 contents_text=contents_text,
             )
             self._session.add(msg)
+            self._session.flush()  # without that mysql may fail with "foreign key constraint fails"
             for attachment in attachments:
+                attachment.msg_path = url
                 self._session.add(attachment)
+            self._session.flush()
         return msg
 
     def send_email(self, recipients, msg_from_db):
@@ -398,7 +401,7 @@ class LibrusNotifier(object):
 def main():
     inbox_folder_id = 5  # Odebrane
 
-    db_name = os.environ.get("DB_NAME") or "pylibrus.sqlite"
+    db_url = os.environ.get("DB_URL") or "sqlite:///pylibrus.sqlite"
 
     librus_debug = os.environ.get("LIBRUS_DEBUG", False)
     email_user = os.environ.get("SMTP_USER", "Default user")
@@ -408,7 +411,7 @@ def main():
     email_dest = [email.strip() for email in os.environ["EMAIL_DEST"].split(",")]
 
     if os.environ.get("TEST_EMAIL_CONF"):
-        notifier = LibrusNotifier(email_user, email_password, email_server, db_name=db_name)
+        notifier = LibrusNotifier(email_user, email_password, email_server, db_url=db_url)
         print("Sending testing email")
         notifier.send_email(
             email_dest,
@@ -431,7 +434,7 @@ def main():
         return 3
 
     with LibrusScraper(librus_user, librus_password, debug=librus_debug) as scraper:
-        with LibrusNotifier(email_user, email_password, email_server, db_name=db_name) as notifier:
+        with LibrusNotifier(email_user, email_password, email_server, db_url=db_url) as notifier:
             msgs = scraper.msgs_from_folder(inbox_folder_id)
             for msg_path, read in msgs:
 

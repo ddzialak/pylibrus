@@ -13,13 +13,21 @@ message from a given folder to an e-mail.
 ## Manual usage
 
 Parameters are passed through environment:
-* `DB_NAME` - file with SQLite database of sent messages
 * `LIBRUS_USER` - login to Librus
 * `LIBRUS_PASS` - password to Librus
 * `SMTP_USER` - login to `SMTP_SERVER` (also the originator of the e-mail sent)
 * `SMTP_PASS` - password to `SMTP_SERVER`
 * `SMTP_SERVER` - SMTP server address (e.g. `smtp.gmail.com`)
 * `EMAIL_DEST` - destination to send e-mail, may be many e-mails separated by `,`
+
+* `DB_URL` - url to DB (by default SQLite database: sqlite:///pylibrus.sqlite).
+
+   To use with mysql additional actions are required:
+   * make sure dev packages are installed (`sudo apt-get install libmysqlclient-dev python-dev`)
+   * then install python packages in virtual env (`pip install mysql mysql-connector-python`)
+
+   then setup `DB_URL=mysql+mysqlconnector://user:PASSWD@HOST:3306/database`
+
 
 Example shell script to run in loop, to be launched from `tmux` or `screen`:
 

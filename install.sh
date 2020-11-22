@@ -39,7 +39,8 @@ export SMTP_SERVER=
 
 export EMAIL_DEST=
 
-#export DB_NAME=pylibrus.sqlite
+# see README file for mysql configuration
+export DB_URL="sqlite:///$(readlink -f pylibrus.sqlite)"
 
 #export FETCH_ATTACHMENTS=yes
 
