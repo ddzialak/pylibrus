@@ -60,6 +60,7 @@ class PyLibrusConfig:
     fetch_attachments: bool = True
     max_age_of_sending_msg_days: int = 4
     db_name: str = "pylibrus.sqlite"
+    db_url: str = ""
     debug: bool = False
     sleep_between_librus_users: int = 10
 
@@ -87,6 +88,9 @@ class PyLibrusConfig:
         if self.send_message not in ("unread", "unsent"):
             raise ValueError("SEND_MESSAGE should be 'unread' or 'unsent'")
 
+        if not self.db_url:
+            self.db_url = "sqlite:///" + self.db_name
+
     @staticmethod
     def get_config_str(config, envs: dict, name: str, section='global'):
         value = ""
@@ -100,7 +104,7 @@ class PyLibrusConfig:
     @classmethod
     def read_config(cls, cfg: ConfigParser, env: dict) -> "PyLibrusConfig":
         kwargs = {}
-        for param in ('db_name', 'send_message', 'fetch_attachments', 'debug', 'sleep_between_librus_users', 'max_age_of_sending_msg_days'):
+        for param in ('db_name', 'db_url', 'send_message', 'fetch_attachments', 'debug', 'sleep_between_librus_users', 'max_age_of_sending_msg_days'):
             value = PyLibrusConfig.get_config_str(cfg, env, param)
             if value:
                 kwargs[param] = value
@@ -256,22 +260,22 @@ class LibrusUser:
 class Msg(Base):
     __tablename__ = "messages"
 
-    url = Column(String, primary_key=True)
+    url = Column(String(1024), primary_key=True)
     folder = Column(Integer)
-    sender = Column(String)
-    subject = Column(String)
+    sender = Column(String(1024))
+    subject = Column(String(4096))
     date = Column(DateTime)
-    contents_html = Column(String)
-    contents_text = Column(String)
+    contents_html = Column(String(409600))
+    contents_text = Column(String(409600))
     email_sent = Column(Boolean, default=False)
 
 
 class Attachment(Base):
     __tablename__ = "attachments"
 
-    link_id = Column(String, primary_key=True)  # link_id seems to contain message id and attachment id
-    msg_path = Column(String, ForeignKey(Msg.url))
-    name = Column(String)
+    link_id = Column(String(256), primary_key=True)  # link_id seems to contain message id and attachment id
+    msg_path = Column(String(1024), ForeignKey(Msg.url))
+    name = Column(String(1024))
     data = Column(LargeBinary)
 
 
@@ -552,14 +556,14 @@ class LibrusScraper(object):
 
 
 class LibrusNotifier(object):
-    def __init__(self, librus_user: LibrusUser, db_name):
+    def __init__(self, librus_user: LibrusUser, db_url):
         self._librus_user = librus_user
         self._engine = None
         self._session = None
-        self._db_name = db_name
+        self._db_url = db_url
 
     def _create_db(self):
-        self._engine = create_engine("sqlite:///" + self._db_name)
+        self._engine = create_engine(self._db_url)
         Base.metadata.create_all(self._engine)
         session_maker = sessionmaker(bind=self._engine)
         self._session = session_maker()
@@ -591,8 +595,11 @@ class LibrusNotifier(object):
                 contents_text=contents_text,
             )
             self._session.add(msg)
+            self._session.flush()  # without that mysql may fail with "foreign key constraint fails"
             for attachment in attachments:
+                attachment.msg_path = url
                 self._session.add(attachment)
+            self._session.flush()
         return msg
 
     def get_attachments(self, msg_from_db) -> list[Attachment]:
@@ -732,10 +739,9 @@ def main():
     for i, librus_user in enumerate(librus_users):
         with LibrusScraper(librus_user.login, librus_user.password, debug=PYLIBRUS_CONFIG.debug, cookies=cookies_per_login.get(librus_user.login)) as scraper:
             cookies_per_login[librus_user.login] = scraper._cookies
-            with LibrusNotifier(librus_user, db_name=PYLIBRUS_CONFIG.db_name) as notifier:
+            with LibrusNotifier(librus_user, db_url=PYLIBRUS_CONFIG.db_url) as notifier:
                 msgs = scraper.msgs_from_folder(PYLIBRUS_CONFIG.inbox_folder_id)
                 for msg_path, read in msgs:
-
                     msg = notifier.get_msg(msg_path)
 
                     if not msg:

@@ -15,7 +15,6 @@ message from a given folder to an e-mail.
 ## Manual usage
 
 Parameters are passed through environment:
-* `DB_NAME` - file with SQLite database of sent messages
 * `LIBRUS_USER` - login to Librus
 * `LIBRUS_PASS` - password to Librus
 * `LIBRUS_NAME` - name used as prefix in email subject or webhook
@@ -23,6 +22,16 @@ Parameters are passed through environment:
 * `SMTP_PASS` - password to `SMTP_SERVER`
 * `SMTP_SERVER` - SMTP server address (e.g. `smtp.gmail.com`)
 * `EMAIL_DEST` - destination to send e-mail, may be many e-mails separated by `,`
+
+* `DB_NAME` - file with SQLite database of sent messages (by default "pylibrus.sqlite", ignored if DB_URL is set)
+* `DB_URL` - url to DB (by default SQLite database: sqlite:///${DB_NAME}).
+
+   To use with mysql additional actions are required:
+   * additional packages required: `sudo apt-get install clang libmysqlclient-dev python-dev-is-python3`
+   * then install python packages in virtual env (`uv pip install mysql mysql-connector-python`)
+
+   then setup `DB_URL=mysql+mysqlconnector://user:PASSWD@HOST:3306/database`
+
 
 Example shell script to run in loop, to be launched from `tmux` or `screen`:
 
