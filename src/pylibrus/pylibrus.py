@@ -122,7 +122,7 @@ class LibrusScraper(object):
         self._set_headers(referer, kwargs)
         return self._session.get(self.api_url_from_path(path), **kwargs)
 
-    def _request(self, method, path, referer=None, **kwargs):
+    def _request(self, method, path, referer=None, verify_status_code=True, **kwargs):
         if referer is None:
             referer = self._last_url
         print(f"{method} {path} referrer={referer}")
@@ -134,6 +134,8 @@ class LibrusScraper(object):
             resp = self._session.post(url, **kwargs)
         else:
             raise AssertionError(f"Unsupported method: {method}")
+        if verify_status_code and resp.status_code // 100 != 2:
+            raise AssertionError(f"Request failed {resp}")
         self._last_url = resp.url
         return resp
 
@@ -161,7 +163,7 @@ class LibrusScraper(object):
                 "is_needed": 1,
             },
         )
-        self._api_post(
+        resp = self._api_post(
             oauth_auth_frag,
             referer=oauth_auth_url,
             data={
@@ -170,6 +172,9 @@ class LibrusScraper(object):
                 "pass": self._passwd,
             },
         )
+        if resp.status_code // 100 != 2:
+            raise AssertionError(f"Login response {resp}")
+
         self._api_get(oauth_grant_frag, referer=oauth_auth_url)
         return self
 
@@ -407,6 +412,7 @@ def main():
     email_user = os.environ.get("SMTP_USER", "Default user")
     email_password = os.environ.get("SMTP_PASS")
     email_server = os.environ.get("SMTP_SERVER")
+    email_prefix = os.environ.get("EMAIL_PREFIX", "")
 
     email_dest = [email.strip() for email in os.environ["EMAIL_DEST"].split(",")]
 
@@ -443,6 +449,8 @@ def main():
                 if not msg:
                     print(f"Fetch {msg_path}")
                     sender, subject, date, contents_html, contents_text, attachments = scraper.fetch_msg(msg_path)
+                    if email_prefix:
+                        subject = f"{email_prefix} {subject}"
                     msg = notifier.add_msg(
                         msg_path, inbox_folder_id, sender, date, subject, contents_html, contents_text, attachments
                     )

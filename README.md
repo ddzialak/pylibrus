@@ -19,6 +19,7 @@ Parameters are passed through environment:
 * `SMTP_PASS` - password to `SMTP_SERVER`
 * `SMTP_SERVER` - SMTP server address (e.g. `smtp.gmail.com`)
 * `EMAIL_DEST` - destination to send e-mail, may be many e-mails separated by `,`
+* `EMAIL_PREFIX` - prefix for each email with this prefix
 
 * `DB_URL` - url to DB (by default SQLite database: sqlite:///pylibrus.sqlite).
 
