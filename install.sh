@@ -17,6 +17,7 @@ set -xeuo pipefail
 
 export LIBRUS_USER=
 export LIBRUS_PASS=
+# export LIBRUS_NAME=
 
 export SMTP_USER=
 export SMTP_PASS=

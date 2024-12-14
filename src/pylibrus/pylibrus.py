@@ -10,8 +10,8 @@ import smtplib
 import sys
 import time
 from configparser import ConfigParser
+from email.message import EmailMessage
 from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from http import client as http_client
 from itertools import chain
@@ -31,6 +31,10 @@ CONFIG_FILE_PATH = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath
 STORED_COOKIES_PATH = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "pylibrus_cookies.json"))
 TRUE_VALUES = ('yes', 'on', 'true', '1')
 FALSE_VALUES = ('no', 'off', 'false', '0')
+
+
+class MissingParameterException(ValueError):
+    pass
 
 
 def str_to_bool(s: str):
@@ -58,36 +62,63 @@ class PyLibrusConfig:
     db_name: str = "pylibrus.sqlite"
     debug: bool = False
     sleep_between_librus_users: int = 10
+
     inbox_folder_id: int = dataclasses.field(default=5, init=False)  # Odebrane
 
-
     def __post_init__(self):
+
+        def convert_str_to_type(value: str, _type: type):
+            # it could be: globals()[f"str_to_{_type.__name__}"](value)
+            # but want to keep function references
+            match _type.__name__:
+                case "bool":
+                    return str_to_bool(value)
+                case "int":
+                    return str_to_int(value)
+            raise AssertionError(f"Non supported type in config: {_type} ({value=}")
+
         for field in dataclasses.fields(self):
             if not isinstance(field.default, dataclasses._MISSING_TYPE) and getattr(self, field.name) is None:
                 setattr(self, field.name, field.default)
+            else:
+                value = getattr(self, field.name)
+                if not isinstance(value, field.type):
+                    setattr(self, field.name, convert_str_to_type(value, field.type))
         if self.send_message not in ("unread", "unsent"):
             raise ValueError("SEND_MESSAGE should be 'unread' or 'unsent'")
 
-    @classmethod
-    def from_config(cls, config: ConfigParser) -> "PyLibrusConfig":
-        return cls(
-            send_message=config["global"].get(PyLibrusConfig.send_message.__name__, None),
-            fetch_attachments=config["global"].getboolean(PyLibrusConfig.fetch_attachments.__name__, None),
-            max_age_of_sending_msg_days=config["global"].getint(PyLibrusConfig.max_age_of_sending_msg_days.__name__, None),
-            db_name=config["global"].get(PyLibrusConfig.db_name.__name__, None),
-            debug=config["global"].getboolean(PyLibrusConfig.debug.__name__, None),
-            sleep_between_librus_users=config["global"].getint(PyLibrusConfig.sleep_between_librus_users.__name__, None),
-        )
+    @staticmethod
+    def get_config_str(config, envs: dict, name: str, section='global'):
+        value = ""
+        if config:
+            cfg_name = getattr(PyLibrusConfig, name.lower()).__name__
+            value = config[section].get(cfg_name, None)
+        if not value:
+            value = envs.get(name.upper(), "")
+        return value
 
     @classmethod
-    def from_env(cls) -> "PyLibrusConfig":
-        return cls(
-            send_message=os.environ.get("SEND_MESSAGE"),
-            fetch_attachments=str_to_bool(os.environ.get("FETCH_ATTACHMENTS")),
-            max_age_of_sending_msg_days=str_to_int(os.environ.get("MAX_AGE_OF_SENDING_MSG_DAYS")),
-            db_name=os.environ.get("DB_NAME"),
-            debug=str_to_bool(os.environ.get("LIBRUS_DEBUG")),
-        )
+    def read_config(cls, cfg: ConfigParser, env: dict) -> "PyLibrusConfig":
+        kwargs = {}
+        for param in ('db_name', 'send_message', 'fetch_attachments', 'debug', 'sleep_between_librus_users', 'max_age_of_sending_msg_days'):
+            value = PyLibrusConfig.get_config_str(cfg, env, param)
+            if value:
+                kwargs[param] = value
+        return cls(**kwargs)
+
+    @classmethod
+    def read_users(cls, cfg: ConfigParser, env: dict) -> list["PyLibrusUser"]:
+        librus_users = LibrusUser.load_librus_users_from_config(cfg, env)
+        try:
+            user_from_env = LibrusUser.from_env(env)
+        except MissingParameterException as ex:
+            if not librus_users:
+                print(f"Missing valid user in env: {ex}")
+                raise MissingParameterException("Configuration file neither environment has valid user definition")
+        else:
+            librus_users.append(user_from_env)
+        return librus_users
+
 
 PYLIBRUS_CONFIG: PyLibrusConfig | None = None
 
@@ -95,7 +126,7 @@ def validate_fields(instance):
     for field in dataclasses.fields(instance):
         value = getattr(instance, field.name)
         if value is None or value == "":
-            raise ValueError(f"The field '{field.name}' cannot be None.")
+            raise MissingParameterException(f"The field '{field.name}' cannot be None.")
 
 
 class Notify(abc.ABC):
@@ -129,25 +160,33 @@ class EmailNotify(Notify):
         validate_fields(self)
 
     @classmethod
-    def from_env(cls) -> "EmailNotify":
+    def from_env(cls, env: dict[str, str]) -> "EmailNotify":
+        port = env.get("SMTP_PORT")
+        kwargs = {"smtp_port": int(port)} if port else {}
         return cls(
-            smtp_user=os.environ.get("SMTP_USER", "Default user"),
-            smtp_pass=os.environ.get("SMTP_PASS"),
-            smtp_server=os.environ.get("SMTP_SERVER"),
-            smtp_port=int(os.environ.get("SMTP_PORT")),
-            email_dest=os.environ.get("EMAIL_DEST"),
+            smtp_user=env.get("SMTP_USER", "Default user"),
+            smtp_pass=env.get("SMTP_PASS"),
+            smtp_server=env.get("SMTP_SERVER"),
+            email_dest=env.get("EMAIL_DEST"),
+            **kwargs
         )
 
     @classmethod
-    def from_config(cls, config, section) -> "EmailNotify":
-        return cls(
-            smtp_user=config[section]['smtp_user'],
-            smtp_pass=config[section]['smtp_pass'],
-            smtp_server=config[section]['smtp_server'],
-            smtp_port=int(config[section]['smtp_port']),
-            email_dest=config[section]['email_dest']
-        )
+    def from_config(cls, config, section, env) -> "EmailNotify":
+        section = config[section]
 
+        def get_param(name):
+            return section.get(name) or config["global"].get(name) or env.get(name.upper())
+
+        port = get_param('smtp_port')
+        kwargs = {'smtp_port': int(port)} if port else {}
+        return cls(
+            smtp_user=get_param('smtp_user'),
+            smtp_pass=get_param('smtp_pass'),
+            smtp_server=get_param('smtp_server'),
+            email_dest=get_param('email_dest'),
+            **kwargs,
+        )
 
 
 @dataclasses.dataclass(slots=True)
@@ -162,15 +201,12 @@ class WebhookNotify(Notify):
         validate_fields(self)
 
     @classmethod
-    def from_env(cls) -> "WebhookNotify":
-        return cls(webhook=os.environ.get("WEBHOOK"))
+    def from_env(cls, envs: dict) -> "WebhookNotify":
+        return cls(webhook=envs.get("WEBHOOK"))
 
     @classmethod
     def from_config(cls, config, section):
-        return cls(
-            webhook=config[section]['webhook']
-        )
-
+        return cls(webhook=config[section]['webhook'])
 
 
 @dataclasses.dataclass(slots=True)
@@ -181,35 +217,39 @@ class LibrusUser:
     notify: EmailNotify | WebhookNotify
 
     @classmethod
-    def from_config(cls, config, section) -> "LibrusUser":
+    def from_config(cls, config, section, env: dict[str, str]) -> "LibrusUser":
         name = section.split(':', 1)[1]
         librus_user = config[section].get('librus_user')
         librus_pass = config[section].get('librus_pass')
         # Determine whether the user uses email or webhook notification
-        if 'email_dest' in config[section]:
-            notify = EmailNotify.from_config(config, section)
-        elif 'webhook' in config[section]:
+        if config[section].get('email_dest'):
+            notify = EmailNotify.from_config(config, section, env)
+        elif config[section].get('webhook'):
             notify = WebhookNotify.from_config(config, section)
         else:
-            raise ValueError(f"No valid notification method for {section}")
+            raise MissingParameterException(f"No valid notification method for {section}")
         return cls(name=name, login=librus_user, password=librus_pass, notify=notify)
 
     @classmethod
-    def from_env(cls) -> "LibrusUser":
+    def from_env(cls, env) -> "LibrusUser":
         return cls(
-            login=os.environ.get("LIBRUS_USER"),
-            password=os.environ.get("LIBRUS_PASS"),
-            name=os.environ.get("LIBRUS_NAME"),
-            notify=WebhookNotify.from_env() if str_to_bool(os.environ.get("WEBHOOK")) else EmailNotify.from_env()
+            login=env.get("LIBRUS_USER"),
+            password=env.get("LIBRUS_PASS"),
+            name=env.get("LIBRUS_NAME"),
+            notify=WebhookNotify.from_env(env) if env.get("WEBHOOK") else EmailNotify.from_env(env)
         )
 
     @classmethod
-    def load_librus_users_from_config(cls, config: ConfigParser) -> list["LibrusUser"]:
+    def load_librus_users_from_config(cls, config: ConfigParser, env: dict) -> list["LibrusUser"]:
         users = []
         for section in config.sections():
             if section.startswith("user:"):
-                user = cls.from_config(config, section)
-                users.append(user)
+                try:
+                    user = cls.from_config(config, section, env=env)
+                except MissingParameterException as ex:
+                    print(f"Section {section} has no valid user definition: {ex}")
+                else:
+                    users.append(user)
         return users
 
 
@@ -313,7 +353,7 @@ class LibrusScraper(object):
         debug(f"{method} {path} referrer={referer}")
         self._set_headers(referer, kwargs)
         url = self.synergia_url_from_path(path)
-        print(f"Making reuqest: {method} {url} with cookies: {self._session.cookies.get_dict()}")
+        debug(f"Making reuqest: {method} {url} with cookies: {self._session.cookies.get_dict()}")
         if method == "get":
             resp = self._session.get(url, **kwargs)
         elif method == "post":
@@ -555,21 +595,22 @@ class LibrusNotifier(object):
                 self._session.add(attachment)
         return msg
 
-    def notify(self, msg_from_db):
+    def get_attachments(self, msg_from_db) -> list[Attachment]:
+        return self._session.query(Attachment).filter(Attachment.msg_path == msg_from_db.url).all()
+
+    def notify(self, msg_from_db: Msg, attachments: list[Attachment]):
         if self._librus_user.notify.is_webhook():
             print(f"Sending '{msg_from_db.subject}' to webhook from {msg_from_db.sender} ({msg_from_db.date})")
-            self.send_via_webhook(msg_from_db)
+            self.send_via_webhook(msg_from_db, attachments=attachments)
         else:
             print(f"Sending '{msg_from_db.subject}' to {self._librus_user.notify.email_dest} from {msg_from_db.sender}")
-            self.send_email(msg_from_db)
+            self.send_email(msg_from_db, attachments=attachments)
 
-    def send_via_webhook(self, msg_from_db):
+    def send_via_webhook(self, msg_from_db, attachments: list[Attachment]):
         attachments_name = []
-        if self._session:
-            attachments = self._session.query(Attachment).filter(Attachment.msg_path == msg_from_db.url).all()
-            attachemnt_to_download_link = {attach.name: LibrusScraper.get_attachment_download_link(attach.link_id) for attach in attachments}
-            for attach in attachments:
-                attachments_name.append(attach.name)
+        attachemnt_to_download_link = {attach.name: LibrusScraper.get_attachment_download_link(attach.link_id) for attach in attachments}
+        for attach in attachments:
+            attachments_name.append(attach.name)
 
         msg = dedent(f"""
         *LIBRUS {self._librus_user.name} - {msg_from_db.date}*
@@ -592,40 +633,30 @@ class LibrusNotifier(object):
         if response.status_code != 200:
             print(f'Failed to send message. Status code: {response.status_code}')
 
-    @staticmethod
-    def format_sender(sender_info, sender_email):
-        sender_b64 = base64.b64encode(sender_info.encode())
-        sender_info_encoded = "=?utf-8?B?" + sender_b64.decode() + "?="
-        return f'"{sender_info_encoded}" <{sender_email}>'
+    def send_email(self, msg_from_db: Msg, attachments: list[Attachment]):
 
-    def send_email(self, msg_from_db):
-        msg = MIMEMultipart("alternative")
+        msg = EmailMessage()
         msg.set_charset("utf-8")
 
         msg["Subject"] = msg_from_db.subject
-        msg["From"] = self.format_sender(msg_from_db.sender, self._librus_user.notify.smtp_user)
+        msg["From"] = f"{msg_from_db.sender} <{self._librus_user.notify.smtp_user}>"
         msg["To"] = ", ".join(self._librus_user.notify.email_dest)
+        msg["Message-ID"] = f"<{msg_from_db.url}@pylibrus>"
 
         attachments_only_with_link: list[Attachment] = []
         attachments_with_data: list[Attachment] = []
-        if self._session:  # sending testing email doesn't have opened session
-            attachments = self._session.query(Attachment).filter(Attachment.msg_path == msg_from_db.url).all()
-            for attach in attachments:
-                if attach.data is None:
-                    attachments_only_with_link.append(attach)
-                else:
-                    attachments_with_data.append(attach)
+        for attach in attachments:
+            if attach.data is None:
+                attachments_only_with_link.append(attach)
+            else:
+                attachments_with_data.append(attach)
         attachments_as_text_msg = "" if not attachments_only_with_link else "\n\nZałączniki:\n" + "\n - ".join(LibrusScraper.get_attachment_download_link(att.link_id) for att in attachments_only_with_link)
         attachments_as_html_msg = "" if not attachments_only_with_link else "<br/><br/><p>Załączniki:<p><ul>" + "".join(f"<li><a href='{LibrusScraper.get_attachment_download_link(att.link_id)}'>{att.name}</a></li>" for att in attachments_only_with_link) + "</ul>"
 
-        html_part = MIMEText(msg_from_db.contents_html + attachments_as_html_msg, "html")
-        text_part = MIMEText(msg_from_db.contents_text + attachments_as_text_msg, "plain")
-        msg.attach(html_part)
-        msg.attach(text_part)
+        msg.set_content(msg_from_db.contents_text + attachments_as_text_msg)
+        msg.add_alternative(msg_from_db.contents_html + attachments_as_html_msg, subtype='html')
         for attach in attachments_with_data:
-            part = MIMEApplication(attach.data, Name=attach.name)
-            part["Content-Disposition"] = 'attachment; filename="%s"' % attach.name
-            msg.attach(part)
+            msg.add_attachment(attach.data, maintype='application', subtype='octet-stream', filename=attach.name)
 
         server = smtplib.SMTP(self._librus_user.notify.smtp_server, self._librus_user.notify.smtp_port)
         server.ehlo()
@@ -635,17 +666,14 @@ class LibrusNotifier(object):
         server.close()
 
 def read_pylibrus_config() -> tuple[PyLibrusConfig, list[LibrusUser]]:
+    config = configparser.ConfigParser()
     if os.path.exists(CONFIG_FILE_PATH):
         print(f"Read config from file: {CONFIG_FILE_PATH}")
-        config = configparser.ConfigParser()
         config.read(CONFIG_FILE_PATH)
-        pylibrus_config = PyLibrusConfig.from_config(config)
-        librus_users = LibrusUser.load_librus_users_from_config(config)
-        return pylibrus_config, librus_users
-    else:
-        print(f"Could not find config file: {CONFIG_FILE_PATH}, read config from env variables")
-        pylibrus_config = PyLibrusConfig.from_env()
-        librus_users = [LibrusUser.from_env()]
+
+    env = dict(os.environ)
+    pylibrus_config = PyLibrusConfig.read_config(config, env=env)
+    librus_users = PyLibrusConfig.read_users(config, env=env)
     return pylibrus_config, librus_users
 
 def debug(msg):
@@ -680,7 +708,7 @@ def main():
     if test_notify:
         notifier = LibrusNotifier(librus_users[0], db_name=PYLIBRUS_CONFIG.db_name)
         msg = Msg(
-                url="/fake/object",
+                url="/wiadomosci/1/5/1000322/f0",
                 folder="Odebrane",
                 sender="Testing sender Żółta Jaźń [Nauczyciel]",
                 date=datetime.datetime.now(),
@@ -689,7 +717,14 @@ def main():
                 contents_text="text content with żółta jaźń",
             )
         print("Sending testing notify")
-        notifier.notify(msg)
+        notifier.notify(msg, [
+            Attachment(
+                link_id='1000322/8916574',
+                msg_path='/wiadomosci/1/5/1000322/f0',
+                name='Psiałóść na\n śŁÓŚFU$#!.pdf',
+                data=b'Definitelly not valid PDF'
+            )
+        ])
         return 2
 
     cookies_per_login = load_cookies_from_file()
@@ -720,7 +755,7 @@ def main():
                     elif PYLIBRUS_CONFIG.send_message == "unread" and read:
                         print(f"Do not send '{msg.subject}' (message already read)")
                     else:
-                        notifier.notify(msg)
+                        notifier.notify(msg, notifier.get_attachments(msg))
                         msg.email_sent = True
         if i != len(librus_users) - 1:
             time.sleep(PYLIBRUS_CONFIG.sleep_between_librus_users)
