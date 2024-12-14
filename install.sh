@@ -1,32 +1,17 @@
 #!/bin/bash
 
-cd $(dirname "$0")
-
 set -eo pipefail
 
-if test -d pylibrus_env; then
-  echo "Directory 'pylibrus_env' already exists!"
-  exit 1
-fi;
+cd $(dirname "$0")
 
-virtualenv -p `which python3` pylibrus_env
-source pylibrus_env/bin/activate
+script="check-librus.sh"
 
-set -u
-
-pip install pipenv
-
-pipenv install --skip-lock
-
-script="$(readlink -f pylibrus_env/bin/check_librus.sh)"
 
 if test -e "$script"; then
     echo "File $script already exists"
 else
     cat <<EOF > "$script"
 #!/bin/bash
-
-source "$(readlink -f pylibrus_env/bin/activate)"
 
 set -xeuo pipefail
 
@@ -50,22 +35,29 @@ export EMAIL_DEST=
 
 #export MAX_AGE_OF_SENDING_MSG_DAYS=4
 
-python3 "$(readlink -f src/pylibrus/pylibrus.py)"
+cd "${PWD}"
+
+uv run src/pylibrus/pylibrus.py
 
 EOF
 
     chmod +x "$script"
 fi;
 
+[[ -e pylibrus.ini  ]] || cp pylibrus.ini.example pylibrus.ini
+
+script_abs_path=$(readlink -f "$script")
+
 cat <<EOF
 
-To finish installation make sure all variables in "$script" are set.
+Make sure all parameters in pylibrus.ini are valid, alternatively
+to finish installation set all variables in "$script_abs_path".
 
 To send testing email run:
-TEST_EMAIL_CONF=1 "$script"
+TEST_EMAIL_CONF=1 "$script_abs_path"
 
 To run it periodically add entry to your crontab (to edit your crontab run "crontab -e"):
 
-*/10 * * * * "$script"
+*/10 * * * * "$script_abs_path"
 
 EOF

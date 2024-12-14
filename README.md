@@ -5,7 +5,7 @@ message from a given folder to an e-mail.
 
 ## Linux installation (semi manual)
 
-* Make sure you have installed `git`, `virtualenv` and `python3`
+* Make sure you have installed `git`, `uv` and `python3`
 * Checkout **pylibrus** repository and run `install.sh` script
 * Setup parameters in `check_librus.sh` (path provided in `install.sh` output)
 * Setup cron entry to run script periodically (details in `install.sh` output)

@@ -109,3 +109,6 @@ pylibrus.sqlite
 .idea/
 /Pipfile.lock
 pylibrus.ini
+
+# install script
+check-librus.sh
