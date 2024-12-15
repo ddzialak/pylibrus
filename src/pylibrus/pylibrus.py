@@ -11,8 +11,6 @@ import sys
 import time
 from configparser import ConfigParser
 from email.message import EmailMessage
-from email.mime.application import MIMEApplication
-from email.mime.text import MIMEText
 from http import client as http_client
 from itertools import chain
 from textwrap import dedent
@@ -386,10 +384,11 @@ class LibrusScraper(object):
         return len(msgs) > 0
 
     def __enter__(self):
+
         if self.are_cookies_valid():
-            print("COOKIES ARE VALID!")
+            print(f"{self._login} COOKIES ARE VALID!")
             return self
-        print("COOKIS ARE NOT VALID - LOGIN!")
+        print(f"{self._login} COOKIES ARE NOT VALID - LOGIN!")
         self.clear_cookies()
         oauth_auth_frag = "/OAuth/Authorization?client_id=46"
         oauth_auth_url = self.api_url_from_path(oauth_auth_frag)
@@ -554,6 +553,16 @@ class LibrusScraper(object):
         msgs.reverse()
         return msgs
 
+def to_msg_id(login, msg_path):
+    msg_id_enc = base64.b64encode(f"{login} {msg_path}".encode()).decode()
+    return f"<{msg_id_enc}@pylibrus>"
+
+def to_login_and_id(msg_id_header: str):
+    msg_id_txt, librus = msg_id_header.strip("<>").split("@", 1)
+    if librus == "librus":
+        login, msg_url = base64.b64decode(msg_id_txt.encode()).decode().split(" ", 1)
+        return login, msg_url
+
 
 class LibrusNotifier(object):
     def __init__(self, librus_user: LibrusUser, db_url):
@@ -569,6 +578,8 @@ class LibrusNotifier(object):
         self._session = session_maker()
 
     def __enter__(self):
+        if self._librus_user.name:
+            print(f" ------  {self._librus_user.name}  ------")
         self._create_db()
         return self
 
@@ -625,7 +636,7 @@ class LibrusNotifier(object):
         *Temat: {msg_from_db.subject}*
         """) + f"\n{msg_from_db.contents_text}"
         if attachemnt_to_download_link:
-            msg += f"\n\nZałączniki:\n"
+            msg += "\n\nZałączniki:\n"
             for attachment_name, link in attachemnt_to_download_link.items():
                 msg += f"- <{link}|{attachment_name}>\n"
         message = {
@@ -645,10 +656,12 @@ class LibrusNotifier(object):
         msg = EmailMessage()
         msg.set_charset("utf-8")
 
-        msg["Subject"] = msg_from_db.subject
+        subject = f"{self._librus_user.name} - {msg_from_db.subject}" if self._librus_user.name else msg_from_db.subject
+
+        msg["Subject"] = subject
         msg["From"] = f"{msg_from_db.sender} <{self._librus_user.notify.smtp_user}>"
         msg["To"] = ", ".join(self._librus_user.notify.email_dest)
-        msg["Message-ID"] = f"<{msg_from_db.url}@pylibrus>"
+        msg["Message-ID"] = to_msg_id(self._librus_user.login, msg_from_db.url)
 
         attachments_only_with_link: list[Attachment] = []
         attachments_with_data: list[Attachment] = []
@@ -671,6 +684,7 @@ class LibrusNotifier(object):
         server.login(self._librus_user.notify.smtp_user, self._librus_user.notify.smtp_pass)
         server.sendmail(self._librus_user.notify.smtp_user, self._librus_user.notify.email_dest, msg.as_string())
         server.close()
+
 
 def read_pylibrus_config() -> tuple[PyLibrusConfig, list[LibrusUser]]:
     config = configparser.ConfigParser()
