@@ -398,7 +398,7 @@ class LibrusScraper(object):
             f"{oauth_auth_frag}&response_type=code&scope=mydata",
             referer="https://portal.librus.pl/rodzina/synergia/loguj",
         )
-        self._api_post(
+        resp = self._api_post(
             oauth_auth_frag,
             referer=oauth_auth_url,
             data={
@@ -407,6 +407,8 @@ class LibrusScraper(object):
                 "pass": self._passwd,
             },
         )
+        if resp.status_code // 100 != 2:
+            raise AssertionError(f"Login response {resp}")
         self._api_get(oauth_2fa_frag, referer=oauth_auth_url)
         self._cookies = self._session.cookies.get_dict()
         return self
